@@ -1,0 +1,12 @@
+[package]
+name = "bellman-playground"
+version = "0.0.1"
+authors = ["Onur Kilic <onurkilic1004@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+rand = "0.4"
+
+bellman_ce = { version = "0.3.1"}
+pairing_ce = { version = "0.19.0"}
+sapling-crypto_ce = { version = "0.1.2"}

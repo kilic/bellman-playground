@@ -68,6 +68,58 @@ impl<'a, E: JubjubEngine> Circuit<E> for DLSnark<'a, E> {
 }
 
 #[test]
+fn test_dl_circuit_bn256() {
+  use bellman_ce::groth16::{
+    create_random_proof, generate_random_parameters, prepare_verifying_key,
+    verify_proof,
+  };
+  use bellman_ce::pairing::bn256::Bn256;
+  use rand::{Rand, SeedableRng, XorShiftRng};
+  // fs?
+  use sapling_crypto_ce::alt_babyjubjub::{fs::Fs, AltJubjubBn256};
+  use sapling_crypto_ce::circuit::test::TestConstraintSystem;
+  // fixedgenerators?
+  use sapling_crypto_ce::jubjub::{FixedGenerators, JubjubParams};
+
+  let curve_params = &AltJubjubBn256::new();
+  let mut rng =
+    XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+
+  let (public_inputs, circuit) = {
+    let a = Fs::rand(&mut rng);
+    // let r = Fs::rand(&mut rng); // use as bad input
+    let generator =
+      curve_params.generator(FixedGenerators::ValueCommitmentValue);
+    let pub_key = generator.mul(a, curve_params);
+    let instance = DLSnark::<Bn256> {
+      params: curve_params,
+      priv_key: Some(a.clone()),
+      // priv_key: Some(r.clone()), // use as bad input
+      pub_key: Some(pub_key.clone()),
+    };
+    let (x, y) = pub_key.into_xy();
+    (vec![x, y], instance)
+  };
+
+  let circuit_parameters = {
+    let empty_circuit = DLSnark::<Bn256> {
+      params: curve_params,
+      priv_key: None,
+      pub_key: None,
+    };
+    generate_random_parameters(empty_circuit, &mut rng).unwrap()
+  };
+
+  let verifing_key = prepare_verifying_key(&circuit_parameters.vk);
+
+  let proof =
+    create_random_proof(circuit, &circuit_parameters, &mut rng).unwrap();
+
+  let is_valid = verify_proof(&verifing_key, &proof, &public_inputs).unwrap();
+  assert!(is_valid);
+}
+
+#[test]
 fn test_dl_circuit_bls12() {
   use bellman_ce::groth16::{
     create_random_proof, generate_random_parameters, prepare_verifying_key,
@@ -80,7 +132,7 @@ fn test_dl_circuit_bls12() {
     fs::Fs, FixedGenerators, JubjubBls12, JubjubParams,
   };
 
-  let curve_params: &JubjubBls12 = &JubjubBls12::new();
+  let curve_params = &JubjubBls12::new();
   let mut rng =
     XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
@@ -93,6 +145,7 @@ fn test_dl_circuit_bls12() {
     let instance = DLSnark::<Bls12> {
       params: curve_params,
       priv_key: Some(a.clone()),
+      // priv_key: Some(r.clone()), // use as bad input
       pub_key: Some(pub_key.clone()),
     };
     let (x, y) = pub_key.into_xy();

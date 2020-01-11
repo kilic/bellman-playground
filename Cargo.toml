@@ -7,6 +7,7 @@ edition = "2018"
 [dependencies]
 rand = "0.4"
 
-bellman_ce = { version = "0.3.1"}
-pairing_ce = { version = "0.19.0"}
-sapling-crypto_ce = { version = "0.1.2"}
+bellman = { package = "bellman_ce", version = "0.3.1"}
+pairing = { package = "pairing_ce", version = "0.19.0"}
+sapling-crypto = { package = "sapling-crypto_ce", git = "https://github.com/alex-ozdemir/sapling-crypto", branch = "bls12-poseidon" }
+bignat = { package = "bellman-bignat", git = "https://github.com/alex-ozdemir/bellman-bignat", version = "0.1.0" , default-features = false}

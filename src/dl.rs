@@ -1,10 +1,6 @@
-use bellman_ce::{Circuit, ConstraintSystem, SynthesisError};
-
-use sapling_crypto_ce::circuit::{boolean, ecc, num};
-
-use sapling_crypto_ce::jubjub::{
-  edwards, FixedGenerators, JubjubEngine, PrimeOrder,
-};
+use bellman::{Circuit, ConstraintSystem, SynthesisError};
+use sapling_crypto::circuit::{boolean, ecc, num};
+use sapling_crypto::jubjub::{edwards, FixedGenerators, JubjubEngine, PrimeOrder};
 
 pub struct DLSnark<'a, E: JubjubEngine> {
   pub params: &'a E::Params,
@@ -23,14 +19,8 @@ impl<'a, E: JubjubEngine + 'a> Clone for DLSnark<'a, E> {
 }
 
 impl<'a, E: JubjubEngine> Circuit<E> for DLSnark<'a, E> {
-  fn synthesize<CS: ConstraintSystem<E>>(
-    self,
-    cs: &mut CS,
-  ) -> Result<(), SynthesisError> {
-    let c_x = boolean::field_into_boolean_vec_le(
-      cs.namespace(|| "private key"),
-      self.priv_key,
-    )?;
+  fn synthesize<CS: ConstraintSystem<E>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+    let c_x = boolean::field_into_boolean_vec_le(cs.namespace(|| "private key"), self.priv_key)?;
 
     let c_pub_calculated = ecc::fixed_base_multiplication(
       cs.namespace(|| "calculated public key"),
@@ -56,8 +46,7 @@ impl<'a, E: JubjubEngine> Circuit<E> for DLSnark<'a, E> {
       c_pub_claimed.get_y(),
       c_pub_calculated.get_y(),
     )?;
-    let xy_eq =
-      boolean::Boolean::and(cs.namespace(|| "compress bools"), &x_eq, &y_eq)?;
+    let xy_eq = boolean::Boolean::and(cs.namespace(|| "compress bools"), &x_eq, &y_eq)?;
     boolean::Boolean::enforce_equal(
       cs.namespace(|| "last check"),
       &xy_eq,
@@ -69,27 +58,22 @@ impl<'a, E: JubjubEngine> Circuit<E> for DLSnark<'a, E> {
 
 #[test]
 fn test_dl_circuit_bn256() {
-  use bellman_ce::groth16::{
-    create_random_proof, generate_random_parameters, prepare_verifying_key,
-    verify_proof,
+  use bellman::groth16::{
+    create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
   };
-  use bellman_ce::pairing::bn256::Bn256;
+  use bellman::pairing::bn256::Bn256;
   use rand::{Rand, SeedableRng, XorShiftRng};
-  // fs?
-  use sapling_crypto_ce::alt_babyjubjub::{fs::Fs, AltJubjubBn256};
-  use sapling_crypto_ce::circuit::test::TestConstraintSystem;
-  // fixedgenerators?
-  use sapling_crypto_ce::jubjub::{FixedGenerators, JubjubParams};
+  use sapling_crypto::alt_babyjubjub::{fs::Fs, AltJubjubBn256};
+  use sapling_crypto::circuit::test::TestConstraintSystem;
+  use sapling_crypto::jubjub::{FixedGenerators, JubjubParams};
 
   let curve_params = &AltJubjubBn256::new();
-  let mut rng =
-    XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+  let mut rng = XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
   let (public_inputs, circuit) = {
     let a = Fs::rand(&mut rng);
     // let r = Fs::rand(&mut rng); // use as bad input
-    let generator =
-      curve_params.generator(FixedGenerators::ValueCommitmentValue);
+    let generator = curve_params.generator(FixedGenerators::ValueCommitmentValue);
     let pub_key = generator.mul(a, curve_params);
     let instance = DLSnark::<Bn256> {
       params: curve_params,
@@ -112,8 +96,7 @@ fn test_dl_circuit_bn256() {
 
   let verifing_key = prepare_verifying_key(&circuit_parameters.vk);
 
-  let proof =
-    create_random_proof(circuit, &circuit_parameters, &mut rng).unwrap();
+  let proof = create_random_proof(circuit, &circuit_parameters, &mut rng).unwrap();
 
   let is_valid = verify_proof(&verifing_key, &proof, &public_inputs).unwrap();
   assert!(is_valid);
@@ -121,26 +104,21 @@ fn test_dl_circuit_bn256() {
 
 #[test]
 fn test_dl_circuit_bls12() {
-  use bellman_ce::groth16::{
-    create_random_proof, generate_random_parameters, prepare_verifying_key,
-    verify_proof,
+  use bellman::groth16::{
+    create_random_proof, generate_random_parameters, prepare_verifying_key, verify_proof,
   };
-  use bellman_ce::pairing::bls12_381::Bls12;
+  use bellman::pairing::bls12_381::Bls12;
   use rand::{Rand, SeedableRng, XorShiftRng};
-  use sapling_crypto_ce::circuit::test::TestConstraintSystem;
-  use sapling_crypto_ce::jubjub::{
-    fs::Fs, FixedGenerators, JubjubBls12, JubjubParams,
-  };
+  use sapling_crypto::circuit::test::TestConstraintSystem;
+  use sapling_crypto::jubjub::{fs::Fs, FixedGenerators, JubjubBls12, JubjubParams};
 
   let curve_params = &JubjubBls12::new();
-  let mut rng =
-    XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+  let mut rng = XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
 
   let (public_inputs, circuit) = {
     let a = Fs::rand(&mut rng);
     // let r = Fs::rand(&mut rng); // use as bad input
-    let generator =
-      curve_params.generator(FixedGenerators::ValueCommitmentValue);
+    let generator = curve_params.generator(FixedGenerators::ValueCommitmentValue);
     let pub_key = generator.mul(a, curve_params);
     let instance = DLSnark::<Bls12> {
       params: curve_params,
@@ -176,8 +154,7 @@ fn test_dl_circuit_bls12() {
 
   let verifing_key = prepare_verifying_key(&circuit_parameters.vk);
 
-  let proof =
-    create_random_proof(circuit, &circuit_parameters, &mut rng).unwrap();
+  let proof = create_random_proof(circuit, &circuit_parameters, &mut rng).unwrap();
 
   let is_valid = verify_proof(&verifing_key, &proof, &public_inputs).unwrap();
   assert!(is_valid);

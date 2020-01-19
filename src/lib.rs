@@ -2,3 +2,5 @@
 
 mod dl;
 mod preimage;
+mod sss1;
+mod sss2;

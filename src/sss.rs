@@ -1,4 +1,5 @@
-mod sss2 {
+mod sss1 {
+
   use bignat::hash::circuit::CircuitHasher;
   use bignat::hash::Hasher;
   use sapling_crypto::bellman::pairing::ff::{
@@ -13,13 +14,59 @@ mod sss2 {
     edwards, FixedGenerators, JubjubEngine, JubjubParams, PrimeOrder,
   };
 
+  // helper function to evaluate polynomial
+  // b = a_0 + a_1 * x
+  pub fn allocate_add_with_coeff<CS, E>(
+    mut cs: CS,
+    a1: &num::AllocatedNum<E>,
+    x: &num::AllocatedNum<E>,
+    a0: &num::AllocatedNum<E>,
+  ) -> Result<num::AllocatedNum<E>, SynthesisError>
+  where
+    E: Engine,
+    CS: ConstraintSystem<E>,
+  {
+    let ax = num::AllocatedNum::alloc(cs.namespace(|| "a1x"), || {
+      let mut ax_val = *a1.get_value().get()?;
+      let x_val = *x.get_value().get()?;
+      ax_val.mul_assign(&x_val);
+      Ok(ax_val)
+    })?;
+
+    cs.enforce(
+      || "a1*x",
+      |lc| lc + a1.get_variable(),
+      |lc| lc + x.get_variable(),
+      |lc| lc + ax.get_variable(),
+    );
+
+    let y = num::AllocatedNum::alloc(cs.namespace(|| "y"), || {
+      let ax_val = *ax.get_value().get()?;
+      let mut y_val = *a0.get_value().get()?;
+      y_val.add_assign(&ax_val);
+      Ok(y_val)
+    })?;
+
+    cs.enforce(
+      || "enforce y",
+      |lc| lc + ax.get_variable() + a0.get_variable(),
+      |lc| lc + CS::one(),
+      |lc| lc + y.get_variable(),
+    );
+    Ok(y)
+  }
+
   pub struct SSSInputs<E>
   where
     E: JubjubEngine,
   {
+    // x and y coord of a share
     pub share_x: Option<E::Fr>,
     pub share_y: Option<E::Fr>,
+    // aux is a public auxiallary input
+    // for example an epoch
     pub aux: Option<E::Fr>,
+    // together with 'aux' secret will be used to construct a secret polynomial
     pub secret: Option<E::Fr>,
   }
 
@@ -28,7 +75,7 @@ mod sss2 {
     E: JubjubEngine,
     H: Hasher<F = E::Fr>,
   {
-    pub degree: u32,
+    pub degree: usize,
     pub inputs: SSSInputs<E>,
     pub hasher: &'a H,
   }
@@ -65,69 +112,79 @@ mod sss2 {
       self,
       cs: &mut CS,
     ) -> Result<(), SynthesisError> {
+      // allocate for a_0 coefficient
+      // which is a private input
       let a_0 = num::AllocatedNum::alloc(cs.namespace(|| "a_0"), || {
         let value = self.inputs.secret.clone();
         Ok(*value.get()?)
       })?;
-
+      // aux is public input
+      // one of the input parameters for constructing the sss polynomial
       let aux = num::AllocatedNum::alloc(cs.namespace(|| "aux"), || {
         let value = self.inputs.aux.clone();
         Ok(*value.get()?)
       })?;
       aux.inputize(cs.namespace(|| "aux public input"))?;
+
+      // x coord of the share, public input
       let x = num::AllocatedNum::alloc(cs.namespace(|| "x"), || {
         let value = self.inputs.share_x.clone();
         Ok(*value.get()?)
       })?;
       x.inputize(cs.namespace(|| "share x public input"))?;
 
+      // a_1 coefficient
+      // a_1 = h(a_0, aux)
       let a_1 = self
         .hasher
-        .allocate_hash(cs.namespace(|| "a_n"), &[aux, a_0.clone()])?;
+        .allocate_hash(cs.namespace(|| "a_1"), &[aux, a_0.clone()])?;
 
-      let mut p = num::AllocatedNum::alloc(cs.namespace(|| "p"), || {
-        let value = x.get_value().clone();
-        Ok(*value.get()?)
-      })?;
+      // first we allocate for coefficients
+      // a_n = h(a_(n-1)) where n > 1
+      let mut coeffs = vec![a_0, a_1];
 
-      let mut x_n = num::AllocatedNum::alloc(cs.namespace(|| "x_1"), || {
-        let value = x.get_value().clone();
-        Ok(*value.get()?)
-      })?;
-
-      for i in 1..self.degree {
-        x_n = x_n.mul(cs.namespace(|| format!("x_{}", i + 1)), &x)?;
-        let p_prev = p.clone();
-        p = num::AllocatedNum::alloc(
-          cs.namespace(|| format!("p_{}", i)),
-          || {
-            let mut p_val = *p_prev.get_value().get()?;
-            let x_n_val = *x_n.get_value().get()?;
-            p_val.add_assign(&x_n_val);
-            Ok(p_val)
-          },
-        )?;
-        cs.enforce(
-          || format!("enforce p_{}", i),
-          |lc| lc + p_prev.get_variable() + x_n.get_variable(),
-          |lc| lc + CS::one(),
-          |lc| lc + p.get_variable(),
-        );
+      for i in 0..self.degree - 1 {
+        let a_prev = coeffs.last().unwrap().clone();
+        let a_n = self
+          .hasher
+          .allocate_hash(cs.namespace(|| format!("a_{}", i + 2)), &[a_prev])?;
+        coeffs.push(a_n);
       }
 
-      let p_a_1 = p.mul(cs.namespace(|| "p*a_1"), &a_1)?;
+      // evaluate polynomial and make constaints for y coord of the share
+      // apply horner look up
+      // A(x) = a_0 + x * (a_1 + x * (a_2 + ... + x * (a_(n-2) + x * a_(n-1)) ... ))
+      coeffs.reverse();
+      let mut acc = allocate_add_with_coeff(
+        cs.namespace(|| "acc_0"),
+        &coeffs[0].clone(),
+        &x,
+        &coeffs[1].clone(),
+      )?;
+      for i in 2..self.degree + 1 {
+        acc = allocate_add_with_coeff(
+          cs.namespace(|| format!("acc_{}", i)),
+          &acc,
+          &x,
+          &coeffs[i].clone(),
+        )?;
+      }
 
+      // y coord of the share,
+      // claimed evaluation,
+      // public input
       let y = num::AllocatedNum::alloc(cs.namespace(|| "y"), || {
         let value = self.inputs.share_y.clone();
         Ok(*value.get()?)
       })?;
       y.inputize(cs.namespace(|| "share y public input"))?;
 
+      // enforce lookup
       cs.enforce(
-        || "enforce evaluation",
+        || "enforce lookup",
         |lc| lc + y.get_variable(),
         |lc| lc + CS::one(),
-        |lc| lc + p_a_1.get_variable() + a_0.get_variable(),
+        |lc| lc + acc.get_variable(),
       );
       Ok(())
     }
@@ -150,8 +207,8 @@ mod sss2 {
     use sapling_crypto::bellman::Circuit;
     use sapling_crypto::circuit::test::TestConstraintSystem;
 
-    fn evaluate_sss<E, H>(
-      degree: u32,
+    fn evaluate_sss_poly<E, H>(
+      degree: usize,
       hasher: &H,
       aux: &E::Fr,
       x: &E::Fr,
@@ -161,33 +218,41 @@ mod sss2 {
       E: Engine,
       H: Hasher<F = E::Fr>,
     {
-      let mut acc = E::Fr::zero();
-      let a_n = hasher.hash(&[*aux, *a_0]);
-      let mut x_n = x.clone();
+      // derive coeffs
+      let mut a_n = E::Fr::zero();
+      let mut coeffs: Vec<E::Fr> = vec![*a_0];
       for i in 0..degree {
-        if i != 0 {
-          x_n.mul_assign(&x);
+        if i == 0 {
+          a_n = hasher.hash(&[*aux, *a_0]);
+        } else {
+          a_n = hasher.hash(&[a_n]);
         }
-        acc.add_assign(&x_n);
+        coeffs.push(a_n);
       }
-      acc.mul_assign(&a_n);
-      acc.add_assign(a_0);
+      // evaluate
+      let mut acc = E::Fr::zero();
+      for (i, a) in coeffs.into_iter().enumerate().rev() {
+        acc.add_assign(&a);
+        if i != 0 {
+          acc.mul_assign(x);
+        }
+      }
       acc
     }
 
     #[test]
-    fn test_sss_bls12() {
+    fn test_xxx_bls12() {
       use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};
       let mut rng = XorShiftRng::from_seed([
         0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654,
       ]);
       let mut cs = TestConstraintSystem::<Bls12>::new();
       let hasher = Poseidon::<Bls12>::default();
-      let degree = 3;
+      let degree = 5usize;
       let secret = Fr::rand(&mut rng);
       let aux = Fr::rand(&mut rng);
       let share_x = Fr::rand(&mut rng);
-      let share_y: Fr = evaluate_sss::<Bls12, Poseidon<Bls12>>(
+      let share_y: Fr = evaluate_sss_poly::<Bls12, Poseidon<Bls12>>(
         degree, &hasher, &aux, &share_x, &secret,
       );
       let input = SSSInputs::<Bls12> {
@@ -206,37 +271,14 @@ mod sss2 {
         instance.synthesize(&mut cs).unwrap();
         let unsatisfied = cs.which_is_unsatisfied();
         if unsatisfied.is_some() {
-          panic!("unsatis {}", unsatisfied.unwrap());
+          panic!("unsatisfied\n{}", unsatisfied.unwrap());
         }
         let unconstrained = cs.find_unconstrained();
         if !unconstrained.is_empty() {
-          panic!("unconst: {}", unconstrained);
+          panic!("unconstrained\n{}", unconstrained);
         }
         assert!(cs.is_satisfied());
       }
-
-      let public_inputs = vec![aux, share_x, share_y];
-      let circuit_parameters = {
-        let input = SSSInputs::<Bls12> {
-          share_x: None,
-          share_y: None,
-          secret: None,
-          aux: None,
-        };
-        let empty_circuit = SSSSnark::<Bls12, Poseidon<Bls12>> {
-          degree: degree,
-          inputs: input,
-          hasher: &hasher,
-        };
-        generate_random_parameters(empty_circuit, &mut rng).unwrap()
-      };
-
-      let verifing_key = prepare_verifying_key(&circuit_parameters.vk);
-      let proof =
-        create_random_proof(instance, &circuit_parameters, &mut rng).unwrap();
-      let is_valid =
-        verify_proof(&verifing_key, &proof, &public_inputs).unwrap();
-      assert!(is_valid);
     }
   }
 }

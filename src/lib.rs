@@ -3,5 +3,4 @@
 mod dl;
 mod merkle;
 mod preimage;
-mod sss1;
-mod sss2;
+mod sss;

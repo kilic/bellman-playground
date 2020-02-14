@@ -290,7 +290,7 @@ mod test {
   const MERKLE_DEPTH: usize = 3;
 
   #[test]
-  fn test_xerkle_circuit_bls12() {
+  fn test_merkle_circuit_bls12() {
     use bignat::hash::hashes::Poseidon;
     use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};
     let mut rng =

@@ -305,7 +305,7 @@ mod test {
   }
 
   #[test]
-  fn test_xerkle_circuit_bls12() {
+  fn test_merkle_circuit_bls12() {
     use bignat::hash::hashes::Poseidon;
     use bignat_hasher::MerkleHasher;
     use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};

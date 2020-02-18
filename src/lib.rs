@@ -4,3 +4,4 @@ mod dl;
 mod merkle;
 mod preimage;
 mod sss;
+mod rln;

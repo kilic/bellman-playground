@@ -45,14 +45,12 @@ where
 }
 
 #[derive(Clone)]
-// pub struct RLNCircuit<'a, E, H>
 pub struct RLNCircuit<E, H>
 where
   E: JubjubEngine,
   H: Hasher<F = E::Fr>,
 {
   pub inputs: RLNInputs<E>,
-  // pub hasher: &'a H,
   pub hasher: H,
 }
 

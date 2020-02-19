@@ -84,11 +84,11 @@ where
       .hasher
       .allocate_hash(cs.namespace(|| "identity"), &[preimage.clone()])?;
 
-    // allocate authetication path
-    // fix: merke depth would be better to be constant
+    // accumulator up to the root
+    let mut acc = identity.clone();
+
+    // ascend the tree
     let auth_path_witness = self.inputs.auth_path.clone();
-    let mut auth_path: Vec<(num::AllocatedNum<E>, boolean::Boolean)> =
-      Vec::with_capacity(auth_path_witness.len());
     for (i, e) in auth_path_witness.into_iter().enumerate() {
       let cs = &mut cs.namespace(|| format!("auth path {}", i));
       let position = boolean::Boolean::from(boolean::AllocatedBit::alloc(
@@ -99,19 +99,7 @@ where
         num::AllocatedNum::alloc(cs.namespace(|| "path element"), || {
           Ok(e.get()?.0)
         })?;
-      auth_path.push((path_element, position));
-    }
 
-    // accumulator up to the root
-    let mut acc = identity.clone();
-
-    // ascend the tree
-    // fix: could be done inside the previous iteration
-    for (i, e) in auth_path.iter().enumerate() {
-      let cs = &mut cs.namespace(|| format!("merkle tree hash {}", i));
-
-      let position = e.1.clone();
-      let path_element = e.0.clone();
       let (xr, xl) = num::AllocatedNum::conditionally_reverse(
         cs.namespace(|| "conditional reversal of preimage"),
         &acc,
@@ -178,8 +166,7 @@ where
     // Nullifier constraints
 
     // hashing secret twice with epoch ingredient
-    // a_1 == hash(a_0, epoch)
-    // is already constrained
+    // a_1 == hash(a_0, epoch) is already constrained
 
     // nullifier == hash(a_1)
 
@@ -298,7 +285,7 @@ mod test {
         }
         let unconstrained = cs.find_unconstrained();
         if !unconstrained.is_empty() {
-          panic!("unconst\n{}", unconstrained);
+          panic!("unconstrained\n{}", unconstrained);
         }
         assert!(cs.is_satisfied());
       }

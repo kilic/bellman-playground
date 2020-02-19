@@ -1,6 +1,7 @@
 use bellman::pairing::Engine;
 use bignat::hash::circuit::CircuitHasher;
 use bignat::hash::Hasher;
+use sapling_crypto::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr};
 use sapling_crypto::bellman::{
   Circuit, ConstraintSystem, SynthesisError, Variable,
 };
@@ -128,9 +129,6 @@ mod test {
     create_random_proof, generate_random_parameters, prepare_verifying_key,
     verify_proof,
   };
-  use sapling_crypto::bellman::pairing::ff::{
-    Field, PrimeField, PrimeFieldRepr,
-  };
   use sapling_crypto::bellman::pairing::Engine;
   use sapling_crypto::bellman::Circuit;
   use sapling_crypto::circuit::test::TestConstraintSystem;
@@ -250,7 +248,7 @@ mod test {
       hasher: H,
     }
 
-    use super::MerkleTree;
+    use super::super::MerkleTree;
     impl<E, H> MerkleHasher<E, H>
     where
       E: JubjubEngine,
@@ -309,7 +307,11 @@ mod test {
     use bignat::hash::hashes::Poseidon;
     use bignat_hasher::MerkleHasher;
     use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};
+    use sapling_crypto::bellman::pairing::ff::{
+      Field, PrimeField, PrimeFieldRepr,
+    };
     use single::{MembershipInputs, MembershipSnark};
+
     let mut rng =
       XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
     let mut cs = TestConstraintSystem::<Bls12>::new();
@@ -322,7 +324,7 @@ mod test {
     // insert a member
     let member = Fr::from_str("11").unwrap();
     let leaf_index = 6;
-    merkle_tree.update(leaf_index, member, None);
+    merkle_tree.insert(leaf_index, member, None);
     // take the root and the witness for this member
     let witness = merkle_tree.witness(leaf_index);
     let root = merkle_tree.root();
@@ -372,140 +374,146 @@ mod test {
     let is_valid = verify_proof(&verifing_key, &proof, &public_inputs).unwrap();
     assert!(is_valid);
   }
+}
 
-  #[test]
-  #[ignore]
-  fn test_merkle_set() {
-    let zero = Some(Fr::zero());
-    let data: Vec<Fr> = (0..8)
-      .map(|s| Fr::from_str(&format!("{}", s)).unwrap())
-      .collect();
-    use bignat::hash::hashes::Poseidon;
-    use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr, FrRepr};
-    let hasher = Poseidon::<Bls12>::default();
-    let mut m = MerkleTree::empty(hasher.clone(), MERKLE_DEPTH);
-    let leaf_index = 6;
-    m.update(leaf_index, data[0], zero);
-    let witness = m.witness(leaf_index);
-    assert!(m.check_inclusion(witness, leaf_index, data[0]));
+use std::collections::HashMap;
+pub struct MerkleTree<H>
+where
+  H: Hasher,
+{
+  pub hasher: H,
+  pub zero: Vec<H::F>,
+  pub depth: usize,
+  pub nodes: HashMap<(usize, usize), H::F>,
+}
+
+impl<H> MerkleTree<H>
+where
+  H: Hasher,
+{
+  pub fn empty(hasher: H, depth: usize) -> Self {
+    let mut zero: Vec<H::F> = Vec::with_capacity(depth + 1);
+    zero.push(H::F::from_str("0").unwrap());
+    for i in 0..depth {
+      zero.push(hasher.hash(&[zero[i]; 2]));
+    }
+    zero.reverse();
+    MerkleTree {
+      hasher: hasher,
+      zero: zero.clone(),
+      depth: depth,
+      nodes: HashMap::new(),
+    }
   }
 
-  use std::collections::HashMap;
-  pub struct MerkleTree<H>
-  where
-    H: Hasher,
-  {
-    pub hasher: H,
-    pub zero: Vec<H::F>,
-    pub depth: usize,
-    pub nodes: HashMap<(usize, usize), H::F>,
+  fn get_node(&self, depth: usize, index: usize) -> H::F {
+    *self
+      .nodes
+      .get(&(depth, index))
+      .unwrap_or_else(|| &self.zero[depth])
   }
 
-  impl<H> MerkleTree<H>
-  where
-    H: Hasher,
-  {
-    pub fn empty(hasher: H, depth: usize) -> Self {
-      let mut zero: Vec<H::F> = Vec::with_capacity(depth + 1);
-      zero.push(H::F::from_str("0").unwrap());
-      for i in 0..depth {
-        zero.push(hasher.hash(&[zero[i]; 2]));
+  fn hash_couple(&self, depth: usize, index: usize) -> H::F {
+    let b = index & !1;
+    self
+      .hasher
+      .hash(&[self.get_node(depth, b), self.get_node(depth, b + 1)])
+  }
+
+  fn recalculate_from(&mut self, leaf_index: usize) {
+    let mut i = leaf_index;
+    let mut depth = self.depth;
+    loop {
+      let h = self.hash_couple(depth, i);
+      i >>= 1;
+      depth -= 1;
+      self.nodes.insert((depth, i), h);
+      if depth == 0 {
+        break;
       }
-      zero.reverse();
-      MerkleTree {
-        hasher: hasher,
-        zero: zero.clone(),
-        depth: depth,
-        nodes: HashMap::new(),
-      }
     }
+    assert_eq!(depth, 0);
+    assert_eq!(i, 0);
+  }
 
-    fn get_node(&self, depth: usize, index: usize) -> H::F {
-      *self
-        .nodes
-        .get(&(depth, index))
-        .unwrap_or_else(|| &self.zero[depth])
-    }
-
-    fn hash_couple(&self, depth: usize, index: usize) -> H::F {
-      let b = index & !1;
-      self
-        .hasher
-        .hash(&[self.get_node(depth, b), self.get_node(depth, b + 1)])
-    }
-
-    fn recalculate_from(&mut self, leaf_index: usize) {
-      let mut i = leaf_index;
-      let mut depth = self.depth;
-      loop {
-        let h = self.hash_couple(depth, i);
-        i >>= 1;
-        depth -= 1;
-        self.nodes.insert((depth, i), h);
-        if depth == 0 {
-          break;
-        }
-      }
-      assert_eq!(depth, 0);
-      assert_eq!(i, 0);
-    }
-
-    pub fn update(&mut self, leaf_index: usize, new: H::F, old: Option<H::F>) {
-      let d = self.depth;
-      {
-        if old.is_some() {
-          let old = old.unwrap();
-          let t = self.get_node(d, leaf_index);
-          if t.is_zero() {
-            assert!(old.is_zero());
-          } else {
-            assert!(t.eq(&self.hasher.hash(&[old])));
-          }
-        }
-      };
-      self.nodes.insert((d, leaf_index), self.hasher.hash(&[new]));
-      self.recalculate_from(leaf_index);
-    }
-
-    pub fn root(&self) -> H::F {
-      return self.get_node(0, 0);
-    }
-
-    pub fn witness(&mut self, leaf_index: usize) -> Vec<(H::F, bool)> {
-      let mut witness = Vec::<(H::F, bool)>::with_capacity(self.depth);
-      let mut i = leaf_index;
-      let mut depth = self.depth;
-      loop {
-        i ^= 1;
-        witness.push((self.get_node(depth, i), (i & 1 == 1)));
-        i >>= 1;
-        depth -= 1;
-        if depth == 0 {
-          break;
-        }
-      }
-      assert_eq!(i, 0);
-      witness
-    }
-
-    pub fn check_inclusion(
-      &mut self,
-      witness: Vec<(H::F, bool)>,
-      leaf_index: usize,
-      data: H::F,
-    ) -> bool {
-      let mut acc = self.hasher.hash(&[data]);
-      {
-        assert!(self.get_node(self.depth, leaf_index).eq(&acc));
-      }
-      for w in witness.into_iter() {
-        if w.1 {
-          acc = self.hasher.hash2(acc, w.0);
+  // takes the of leaf preimage
+  pub fn insert(&mut self, leaf_index: usize, new: H::F, old: Option<H::F>) {
+    let d = self.depth;
+    {
+      if old.is_some() {
+        let old = old.unwrap();
+        let t = self.get_node(d, leaf_index);
+        if t.is_zero() {
+          assert!(old.is_zero());
         } else {
-          acc = self.hasher.hash2(w.0, acc);
+          assert!(t.eq(&self.hasher.hash(&[old])));
         }
       }
-      acc.eq(&self.root())
-    }
+    };
+    self.nodes.insert((d, leaf_index), self.hasher.hash(&[new]));
+    self.recalculate_from(leaf_index);
   }
+
+  pub fn update(&mut self, leaf_index: usize, leaf: H::F) {
+    self.nodes.insert((self.depth, leaf_index), leaf);
+    self.recalculate_from(leaf_index);
+  }
+
+  pub fn root(&self) -> H::F {
+    return self.get_node(0, 0);
+  }
+
+  pub fn witness(&mut self, leaf_index: usize) -> Vec<(H::F, bool)> {
+    let mut witness = Vec::<(H::F, bool)>::with_capacity(self.depth);
+    let mut i = leaf_index;
+    let mut depth = self.depth;
+    loop {
+      i ^= 1;
+      witness.push((self.get_node(depth, i), (i & 1 == 1)));
+      i >>= 1;
+      depth -= 1;
+      if depth == 0 {
+        break;
+      }
+    }
+    assert_eq!(i, 0);
+    witness
+  }
+
+  pub fn check_inclusion(
+    &mut self,
+    witness: Vec<(H::F, bool)>,
+    leaf_index: usize,
+    data: H::F,
+  ) -> bool {
+    let mut acc = self.hasher.hash(&[data]);
+    {
+      assert!(self.get_node(self.depth, leaf_index).eq(&acc));
+    }
+    for w in witness.into_iter() {
+      if w.1 {
+        acc = self.hasher.hash2(acc, w.0);
+      } else {
+        acc = self.hasher.hash2(w.0, acc);
+      }
+    }
+    acc.eq(&self.root())
+  }
+}
+
+#[test]
+#[ignore]
+fn test_merkle_set() {
+  let zero = Some(Fr::zero());
+  let data: Vec<Fr> = (0..8)
+    .map(|s| Fr::from_str(&format!("{}", s)).unwrap())
+    .collect();
+  use bignat::hash::hashes::Poseidon;
+  use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr, FrRepr};
+  let hasher = Poseidon::<Bls12>::default();
+  let mut m = MerkleTree::empty(hasher.clone(), 3);
+  let leaf_index = 6;
+  m.insert(leaf_index, data[0], zero);
+  let witness = m.witness(leaf_index);
+  assert!(m.check_inclusion(witness, leaf_index, data[0]));
 }

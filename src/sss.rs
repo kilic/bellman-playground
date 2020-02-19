@@ -1,4 +1,3 @@
-
 use bignat::hash::circuit::CircuitHasher;
 use bignat::hash::Hasher;
 use sapling_crypto::bellman::pairing::ff::{Field, PrimeField, PrimeFieldRepr};
@@ -251,13 +250,13 @@ mod test {
     let share_y: Fr = evaluate_sss_poly::<Bls12, Poseidon<Bls12>>(
       degree, &hasher, &aux, &share_x, &secret,
     );
-    let input = SSSInputs::<Bls12> {
+    let input = SSSInputs {
       share_x: Some(share_x),
       share_y: Some(share_y),
       secret: Some(secret),
       aux: Some(aux),
     };
-    let instance = SSSSnark::<Bls12, Poseidon<Bls12>> {
+    let instance = SSSSnark {
       degree: degree,
       inputs: input,
       hasher: &hasher,

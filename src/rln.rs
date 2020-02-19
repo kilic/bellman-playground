@@ -145,10 +145,10 @@ where
 
     let a_0 = preimage.clone();
 
-    // a_1 == h(a_0, aux)
+    // a_1 == h(a_0, epoch)
     let a_1 = self
       .hasher
-      .allocate_hash(cs.namespace(|| "a_1"), &[epoch, a_0.clone()])?;
+      .allocate_hash(cs.namespace(|| "a_1"), &[a_0.clone(), epoch])?;
 
     let share_x = num::AllocatedNum::alloc(cs.namespace(|| "share x"), || {
       let value = self.inputs.share_x.clone();
@@ -158,13 +158,13 @@ where
 
     // constaint the evaluation the line equation
     let eval =
-      allocate_add_with_coeff(cs.namespace(|| "eval"), &a_1, &a_0, &share_x)?;
+      allocate_add_with_coeff(cs.namespace(|| "eval"), &a_1, &share_x, &a_0)?;
 
-    let share_y = num::AllocatedNum::alloc(cs.namespace(|| "share x"), || {
+    let share_y = num::AllocatedNum::alloc(cs.namespace(|| "share y"), || {
       let value = self.inputs.share_y.clone();
       Ok(*value.get()?)
     })?;
-    share_y.inputize(cs.namespace(|| "share x is public"))?;
+    share_y.inputize(cs.namespace(|| "share y is public"))?;
 
     // see if share satisfies the line equation
     cs.enforce(
@@ -189,7 +189,7 @@ where
 
     let nullifier =
       num::AllocatedNum::alloc(cs.namespace(|| "nullifier"), || {
-        let value = self.inputs.root.clone();
+        let value = self.inputs.nullifier.clone();
         Ok(*value.get()?)
       })?;
     nullifier.inputize(cs.namespace(|| "nullifier is public"))?;
@@ -203,5 +203,105 @@ where
     );
 
     Ok(())
+  }
+}
+
+#[cfg(test)]
+mod test {
+
+  use super::{RLNCircuit, RLNInputs};
+  use crate::merkle::MerkleTree;
+  use bignat::hash::Hasher;
+  use rand::{Rand, SeedableRng, XorShiftRng};
+  use sapling_crypto::bellman::groth16::{
+    create_random_proof, generate_random_parameters, prepare_verifying_key,
+    verify_proof,
+  };
+  use sapling_crypto::bellman::Circuit;
+
+  use sapling_crypto::bellman::pairing::ff::{
+    Field, PrimeField, PrimeFieldRepr,
+  };
+  use sapling_crypto::circuit::test::TestConstraintSystem;
+
+  #[test]
+  fn test_rln_bls12_poseidon() {
+    use bignat::hash::hashes::Poseidon;
+    use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};
+    let MERKLE_DEPTH = 8;
+
+    let mut rng =
+      XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
+    let mut cs = TestConstraintSystem::<Bls12>::new();
+    let hasher = Poseidon::<Bls12>::default();
+
+    let mut membership_tree = MerkleTree::empty(hasher.clone(), MERKLE_DEPTH);
+
+    // A. setup an identity
+
+    let id_key = Fr::rand(&mut rng);
+    let id_comm = hasher.hash(&[id_key.clone()]);
+
+    // B. insert to the membership tree
+
+    let id_index = 6; // any number below 2^depth will work
+    membership_tree.update(id_index, id_comm);
+
+    // C. signalling
+
+    // C.1 get membership witness
+    let auth_path = membership_tree.witness(id_index);
+    assert!(membership_tree.check_inclusion(
+      auth_path.clone(),
+      6,
+      id_key.clone()
+    ));
+    // C.1 prepare sss
+
+    // get current epoch
+    let epoch = Fr::rand(&mut rng);
+
+    let signal_hash = Fr::rand(&mut rng);
+    // evaluation point is the signal_hash
+    let share_x = signal_hash.clone();
+
+    // calculate current line equation
+    let a_0 = id_key.clone();
+    let a_1 = hasher.hash(&[a_0, epoch]);
+
+    // evaluate line equation
+    let mut share_y = a_1.clone();
+    share_y.mul_assign(&share_x);
+    share_y.add_assign(&a_0);
+
+    // calculate nullfier
+    let nullifier = hasher.hash(&[a_1]);
+    {
+      let inputs = RLNInputs::<Bls12> {
+        share_x: Some(share_x),
+        share_y: Some(share_y),
+        epoch: Some(epoch),
+        nullifier: Some(nullifier),
+        root: Some(membership_tree.root()),
+        preimage: Some(id_key),
+        auth_path: auth_path.into_iter().map(|w| Some(w)).collect(),
+      };
+
+      let circuit = RLNCircuit::<Bls12, Poseidon<Bls12>> { inputs, hasher };
+
+      {
+        let circuit = circuit.clone();
+        circuit.synthesize(&mut cs).unwrap();
+        let unsatisfied = cs.which_is_unsatisfied();
+        if unsatisfied.is_some() {
+          panic!("unsatisfied\n{}", unsatisfied.unwrap());
+        }
+        let unconstrained = cs.find_unconstrained();
+        if !unconstrained.is_empty() {
+          panic!("unconst\n{}", unconstrained);
+        }
+        assert!(cs.is_satisfied());
+      }
+    }
   }
 }

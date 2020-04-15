@@ -358,18 +358,11 @@ mod test {
       let mut rng = XorShiftRng::from_seed([
         0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654,
       ]);
-      // let inputs = self.empty_inputs();
-      // let empty_circuit = circuit.clone();
       let parameters = {
         let hasher = self.hasher.clone();
         let inputs = self.empty_inputs();
         let circuit = RLNCircuit::<E, H> { inputs, hasher };
-        let now = Instant::now();
         let parameters = generate_random_parameters(circuit, &mut rng).unwrap();
-        println!(
-          "generate params time {}",
-          now.elapsed().as_millis() as f64 / 1000.0
-        );
         parameters
       };
 

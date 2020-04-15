@@ -155,7 +155,7 @@ mod test {
     {
       fn as_vec<CS: ConstraintSystem<E>>(
         &self,
-        cs: CS,
+        _cs: CS,
       ) -> Result<Vec<num::AllocatedNum<E>>, SynthesisError> {
         Ok(vec![self.m.clone()])
       }
@@ -417,7 +417,7 @@ where
     let b = index & !1;
     self
       .hasher
-      .hash(&[self.get_node(depth, b), self.get_node(depth, b + 1)])
+      .hash2(self.get_node(depth, b), self.get_node(depth, b + 1))
   }
 
   fn recalculate_from(&mut self, leaf_index: usize) {

@@ -36,12 +36,28 @@ where
 
   // Private inputs
 
-  // together with the epoch, preimage will be
-  // used to construct a secret line equation
-  pub preimage: Option<E::Fr>,
+  // id_key must be a preimage of a leaf in membership tree.
+  // id_key also together with epoch will be used to construct
+  // a secret line equation together with the epoch
+  pub id_key: Option<E::Fr>,
 
   // authentication path of the member
   pub auth_path: Vec<Option<(E::Fr, bool)>>,
+}
+
+impl<E> RLNInputs<E>
+where
+  E: JubjubEngine,
+{
+  fn public(self) -> Vec<E::Fr> {
+    vec![
+      self.root.unwrap(),
+      self.epoch.unwrap(),
+      self.share_x.unwrap(),
+      self.share_y.unwrap(),
+      self.nullifier.unwrap(),
+    ]
+  }
 }
 
 #[derive(Clone)]
@@ -75,7 +91,7 @@ where
 
     let preimage =
       num::AllocatedNum::alloc(cs.namespace(|| "preimage"), || {
-        let value = self.inputs.preimage;
+        let value = self.inputs.id_key;
         Ok(*value.get()?)
       })?;
 
@@ -83,7 +99,6 @@ where
     let identity = self
       .hasher
       .allocate_hash(cs.namespace(|| "identity"), &[preimage.clone()])?;
-
     // accumulator up to the root
     let mut acc = identity.clone();
 
@@ -198,6 +213,7 @@ mod test {
 
   use super::{RLNCircuit, RLNInputs};
   use crate::merkle::MerkleTree;
+  use bignat::hash::circuit::CircuitHasher;
   use bignat::hash::Hasher;
   use rand::{Rand, SeedableRng, XorShiftRng};
   use sapling_crypto::bellman::groth16::{
@@ -210,85 +226,195 @@ mod test {
     Field, PrimeField, PrimeFieldRepr,
   };
   use sapling_crypto::circuit::test::TestConstraintSystem;
+  use sapling_crypto::jubjub::JubjubEngine;
+  use std::thread::sleep;
+  use std::time::{Duration, Instant};
 
-  #[test]
-  fn test_rln_bls12_poseidon() {
-    use bignat::hash::hashes::Poseidon;
-    use sapling_crypto::bellman::pairing::bls12_381::{Bls12, Fr};
-    let MERKLE_DEPTH = 8;
+  struct RLNTest<E, H>
+  where
+    E: JubjubEngine,
+    H: Hasher<F = E::Fr>,
+  {
+    hasher: H,
+    cs: TestConstraintSystem<E>,
+    merkle_depth: usize,
+  }
 
-    let mut rng =
-      XorShiftRng::from_seed([0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654]);
-    let mut cs = TestConstraintSystem::<Bls12>::new();
-    let hasher = Poseidon::<Bls12>::default();
+  impl<E, H> RLNTest<E, H>
+  where
+    E: JubjubEngine,
+    H: CircuitHasher<E = E> + Hasher<F = E::Fr>,
+  {
+    fn inputs(&mut self) -> RLNInputs<E> {
+      let mut rng = XorShiftRng::from_seed([
+        0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654,
+      ]);
+      // Initialize empty merkle tree
+      let merkle_depth = self.merkle_depth;
+      let mut membership_tree =
+        MerkleTree::empty(self.hasher.clone(), merkle_depth);
 
-    let mut membership_tree = MerkleTree::empty(hasher.clone(), MERKLE_DEPTH);
+      // A. setup an identity
 
-    // A. setup an identity
+      let id_key = E::Fr::rand(&mut rng);
+      let id_comm = self.hasher.hash(&[id_key.clone()]);
 
-    let id_key = Fr::rand(&mut rng);
-    let id_comm = hasher.hash(&[id_key.clone()]);
+      // B. insert to the membership tree
 
-    // B. insert to the membership tree
+      let id_index = 6; // any number below 2^depth will work
+      membership_tree.update(id_index, id_comm);
 
-    let id_index = 6; // any number below 2^depth will work
-    membership_tree.update(id_index, id_comm);
+      // C.1 get membership witness
 
-    // C. signalling
+      let auth_path = membership_tree.witness(id_index);
+      assert!(membership_tree.check_inclusion(
+        auth_path.clone(),
+        id_index,
+        id_key.clone()
+      ));
 
-    // C.1 get membership witness
-    let auth_path = membership_tree.witness(id_index);
-    assert!(membership_tree.check_inclusion(
-      auth_path.clone(),
-      6,
-      id_key.clone()
-    ));
-    // C.1 prepare sss
+      // C.2 prepare sss
 
-    // get current epoch
-    let epoch = Fr::rand(&mut rng);
+      // get current epoch
+      let epoch = E::Fr::rand(&mut rng);
 
-    let signal_hash = Fr::rand(&mut rng);
-    // evaluation point is the signal_hash
-    let share_x = signal_hash.clone();
+      let signal_hash = E::Fr::rand(&mut rng);
+      // evaluation point is the signal_hash
+      let share_x = signal_hash.clone();
 
-    // calculate current line equation
-    let a_0 = id_key.clone();
-    let a_1 = hasher.hash(&[a_0, epoch]);
+      // calculate current line equation
+      let a_0 = id_key.clone();
+      let a_1 = self.hasher.hash(&[a_0, epoch]);
 
-    // evaluate line equation
-    let mut share_y = a_1.clone();
-    share_y.mul_assign(&share_x);
-    share_y.add_assign(&a_0);
+      // evaluate line equation
+      let mut share_y = a_1.clone();
+      share_y.mul_assign(&share_x);
+      share_y.add_assign(&a_0);
 
-    // calculate nullfier
-    let nullifier = hasher.hash(&[a_1]);
-    {
-      let inputs = RLNInputs::<Bls12> {
+      // calculate nullfier
+      let nullifier = self.hasher.hash(&[a_1]);
+
+      // compose the circuit
+
+      let inputs = RLNInputs::<E> {
         share_x: Some(share_x),
         share_y: Some(share_y),
         epoch: Some(epoch),
         nullifier: Some(nullifier),
         root: Some(membership_tree.root()),
-        preimage: Some(id_key),
+        id_key: Some(id_key),
         auth_path: auth_path.into_iter().map(|w| Some(w)).collect(),
       };
 
-      let circuit = RLNCircuit::<Bls12, Poseidon<Bls12>> { inputs, hasher };
+      inputs
+    }
+
+    fn empty_inputs(&self) -> RLNInputs<E> {
+      let inputs = RLNInputs::<E> {
+        share_x: None,
+        share_y: None,
+        epoch: None,
+        nullifier: None,
+        root: None,
+        id_key: None,
+        auth_path: vec![None; self.merkle_depth],
+      };
+
+      inputs
+    }
+
+    pub fn new(hasher: H, merkle_depth: usize) -> RLNTest<E, H> {
+      let cs = TestConstraintSystem::<E>::new();
+      RLNTest::<E, H> {
+        hasher: hasher.clone(),
+        cs,
+        merkle_depth,
+      }
+    }
+
+    pub fn run_test(&mut self) {
+      let hasher = self.hasher.clone();
+      let inputs = self.inputs();
+      let circuit = RLNCircuit::<E, H> { inputs, hasher };
 
       {
         let circuit = circuit.clone();
-        circuit.synthesize(&mut cs).unwrap();
-        let unsatisfied = cs.which_is_unsatisfied();
+        circuit.synthesize(&mut self.cs).unwrap();
+        let unsatisfied = self.cs.which_is_unsatisfied();
         if unsatisfied.is_some() {
           panic!("unsatisfied\n{}", unsatisfied.unwrap());
         }
-        let unconstrained = cs.find_unconstrained();
+        let unconstrained = self.cs.find_unconstrained();
         if !unconstrained.is_empty() {
           panic!("unconstrained\n{}", unconstrained);
         }
-        assert!(cs.is_satisfied());
+        assert!(self.cs.is_satisfied());
+
+        println!("number of constaints {}", self.cs.num_constraints());
       }
     }
+
+    pub fn prover_bench(&mut self) {
+      let mut rng = XorShiftRng::from_seed([
+        0x3dbe6258, 0x8d313d76, 0x3237db17, 0xe5bc0654,
+      ]);
+      // let inputs = self.empty_inputs();
+      // let empty_circuit = circuit.clone();
+      let parameters = {
+        let hasher = self.hasher.clone();
+        let inputs = self.empty_inputs();
+        let circuit = RLNCircuit::<E, H> { inputs, hasher };
+        let now = Instant::now();
+        let parameters = generate_random_parameters(circuit, &mut rng).unwrap();
+        println!(
+          "generate params time {}",
+          now.elapsed().as_millis() as f64 / 1000.0
+        );
+        parameters
+      };
+
+      let hasher = self.hasher.clone();
+      let inputs = self.inputs();
+      let circuit = RLNCircuit::<E, H> {
+        inputs: inputs.clone(),
+        hasher,
+      };
+      let now = Instant::now();
+      let proof = create_random_proof(circuit, &parameters, &mut rng).unwrap();
+      println!("prover time {}", now.elapsed().as_millis() as f64 / 1000.0);
+
+      let verifing_key = prepare_verifying_key(&parameters.vk);
+      assert!(verify_proof(&verifing_key, &proof, &inputs.public()).unwrap());
+    }
+  }
+
+  #[test]
+  fn test_rln_bn256_poseidon_m24() {
+    use bignat::hash::hashes::Poseidon;
+    use sapling_crypto::bellman::pairing::bn256::Bn256;
+    let hasher = Poseidon::<Bn256>::default();
+    let mut instance = RLNTest::new(hasher, 24);
+    instance.run_test();
+    instance.prover_bench();
+  }
+
+    #[test]
+  fn test_rln_bn256_pedersen_m24() {
+    use bignat::hash::hashes::Pedersen;
+    use sapling_crypto::bellman::pairing::bn256::Bn256;
+    let hasher = Pedersen::<Bn256>::default();
+    let mut instance = RLNTest::new(hasher, 24);
+    instance.run_test();
+    instance.prover_bench();
+  }
+
+  #[test]
+  fn test_rln_bn256_mimc_m24() {
+    use bignat::hash::hashes::Mimc;
+    use sapling_crypto::bellman::pairing::bn256::Bn256;
+    let hasher = Mimc::<Bn256>::default();
+    let mut instance = RLNTest::new(hasher, 24);
+    instance.run_test();
+    instance.prover_bench();
   }
 }

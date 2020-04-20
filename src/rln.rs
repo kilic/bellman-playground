@@ -216,7 +216,7 @@ mod test {
   use bignat::hash::circuit::CircuitHasher;
   use bignat::hash::Hasher;
   use rand::{Rand, SeedableRng, XorShiftRng};
-  use sapling_crypto::bellman::groth16::{
+  use bellman::groth16::{
     create_random_proof, generate_random_parameters, prepare_verifying_key,
     verify_proof,
   };
@@ -381,17 +381,61 @@ mod test {
     }
   }
 
+  // #[test]
+  // fn test_pos_against_circom() {
+  //   use sapling_crypto::bellman::pairing::ff::{
+  //     Field, PrimeField, PrimeFieldRepr,
+  //   };
+
+  //   use bignat::hash::hashes::Poseidon;
+  //   use bignat::hash::Hasher;
+  //   use sapling_crypto::bellman::pairing::bn256::{Bn256, Fr};
+  //   use sapling_crypto::group_hash::BlakeHasher;
+  //   use sapling_crypto::poseidon::bn256::Bn256PoseidonParams;
+  //   use std::sync::Arc;
+  //   // let t = 6u32;
+  //   // let r_f = 8u32;
+  //   // let r_p = 57u32;
+  //   let poseidon_params = Bn256PoseidonParams::new::<BlakeHasher>();
+  //   // Bn256PoseidonParams::new_for_params::<BlakeHasher>(t, r_f, r_p, 0);
+  //   let hasher = Poseidon::<Bn256> {
+  //     params: Arc::new(poseidon_params),
+  //   };
+  //   let input1 = Fr::from_str("1").unwrap();
+  //   let input2 = Fr::from_str("2").unwrap();
+  //   let out = hasher.hash(&[input1, input2]);
+
+  //   println!("{:?}", out);
+  // }
+
   #[test]
   fn test_rln_bn256_poseidon_m24() {
+    use sapling_crypto::bellman::pairing::ff::{
+      Field, PrimeField, PrimeFieldRepr,
+    };
+  
     use bignat::hash::hashes::Poseidon;
-    use sapling_crypto::bellman::pairing::bn256::Bn256;
-    let hasher = Poseidon::<Bn256>::default();
+    use bignat::hash::Hasher;
+    use sapling_crypto::bellman::pairing::bn256::{Bn256, Fr};
+    use sapling_crypto::group_hash::BlakeHasher;
+    use sapling_crypto::poseidon::bn256::Bn256PoseidonParams;
+    use std::sync::Arc;
+
+    let t = 3u32;
+    let r_f = 8u32;
+    let r_p = 57u32;
+    let security_level = 126u32;
+    let params =
+      Bn256PoseidonParams::new_for_params::<BlakeHasher>(t, r_f, r_p, security_level);
+    let hasher = Poseidon::<Bn256> {
+      params: Arc::new(params),
+    };
     let mut instance = RLNTest::new(hasher, 24);
     instance.run_test();
     instance.prover_bench();
   }
 
-    #[test]
+  #[test]
   fn test_rln_bn256_pedersen_m24() {
     use bignat::hash::hashes::Pedersen;
     use sapling_crypto::bellman::pairing::bn256::Bn256;
